@@ -62,3 +62,24 @@ class BaseDecoder(nn.Module):
                             memory_mask=memory_mask,
                             tgt_key_padding_mask=tgt_key_padding_mask,
                             memory_key_padding_mask=memory_key_padding_mask,)
+class BaseEncoder(nn.Module):
+    def __init__(self, 
+                emb_size: int,
+                num_layers: int,
+                n_head: int,
+                batch_first: bool=True,
+                ):
+        super(BaseEncoder, self).__init__()
+        
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=emb_size, nhead=n_head, batch_first = batch_first)
+            ,num_layers=num_layers)
+        
+    def forward(self,
+                src,
+                src_mask = None,
+                src_key_padding_mask = None,):
+
+        return self.encoder(src=src,
+                            mask=src_mask,
+                            src_key_padding_mask=src_key_padding_mask,)
