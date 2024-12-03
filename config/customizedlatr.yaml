@@ -58,7 +58,7 @@ vit_model_name: "google/vit-base-patch16-224-in21k"
 
 max_2d_position_embeddings: 1024
 
-num_decoder_layers: 4
+num_decoder_layers: 2
 
 encoder_name: "VietAI/vit5-base"
 
