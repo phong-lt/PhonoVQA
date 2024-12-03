@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import T5EncoderModel, ViTModel, AutoConfig
 from .modules import SinusoidalPositionalEncoding, PhonemeEmbedding, BaseDecoder
 
@@ -85,15 +86,28 @@ class PhonemeLaTr(nn.Module):
                             num_layers=self.config.num_decoder_layers,
                             n_head=self.config.n_head
                         )
-
-        # shared lm_head
-        self.shared_lm_head = nn.Linear(
-            self.encoder.config.d_model, self.encoder.config.d_model)
-
-        # phoneme lm_head
-        self.onset_lm_head = nn.Linear(self.onset_embed_dim, onset_vocab_size)
-        self.rhyme_lm_head = nn.Linear(self.rhyme_tone_embed_dim, rhyme_vocab_size)
-        self.tone_lm_head = nn.Linear(self.rhyme_tone_embed_dim, tone_vocab_size)
+        
+        self.decoder_onset=BaseDecoder(
+                            emb_size=self.encoder.config.d_model,
+                            num_layers=1,
+                            n_head=self.config.n_head
+                        )
+        self.decoder_rhyme=BaseDecoder(
+                            emb_size=self.encoder.config.d_model,
+                            num_layers=1,
+                            n_head=self.config.n_head
+                        )
+        self.decoder_tone=BaseDecoder(
+                            emb_size=self.encoder.config.d_model,
+                            num_layers=1,
+                            n_head=self.config.n_head
+                        )
+        
+        # Adjusted lm_heads to predict from decoder output directly
+        self.onset_lm_head = nn.Linear(self.encoder.config.d_model, onset_vocab_size)
+        self.rhyme_lm_head = nn.Linear(self.encoder.config.d_model, rhyme_vocab_size)
+        self.tone_lm_head = nn.Linear(self.encoder.config.d_model, tone_vocab_size)
+        
 
     def forward(self,
                 pixel_values,
@@ -113,23 +127,33 @@ class PhonemeLaTr(nn.Module):
                 inputs_embeds=inputs_embeds,
             ).last_hidden_state
 
-        decoder_outputs = self.decode(labels, 
-                                        encoder_outputs, 
-                                        attention_mask, 
-                                        label_attention_mask)
+        decoder_outputs,square_subsequent_mask = self.decode(labels, 
+                                      encoder_outputs, 
+                                      attention_mask, 
+                                      label_attention_mask)
 
-        decoder_outputs = self.shared_lm_head(decoder_outputs)
+        onset_decoder_outputs = self.decoder_onset(decoder_outputs,
+                            encoder_outputs,
+                            tgt_mask = square_subsequent_mask,
+                            memory_key_padding_mask = attention_mask,
+                            tgt_key_padding_mask = label_attention_mask)
+        rhyme_decoder_outputs = self.decoder_rhyme(decoder_outputs, 
+                            encoder_outputs,
+                            tgt_mask = square_subsequent_mask,
+                            memory_key_padding_mask = attention_mask,
+                            tgt_key_padding_mask = label_attention_mask)
+        tone_decoder_outputs = self.decoder_tone(decoder_outputs, 
+                            encoder_outputs,
+                            tgt_mask = square_subsequent_mask,
+                            memory_key_padding_mask = attention_mask,
+                            tgt_key_padding_mask = label_attention_mask)
+        
+        # Dự đoán đồng thời onset, rhyme, tone
+        onset_logits = self.onset_lm_head(onset_decoder_outputs)  # (batch_size, seq_len, onset_vocab_size)
+        rhyme_logits = self.rhyme_lm_head(rhyme_decoder_outputs)  # (batch_size, seq_len, rhyme_vocab_size)
+        tone_logits = self.tone_lm_head(tone_decoder_outputs)    # (batch_size, seq_len, tone_vocab_size)
 
-
-        onset_out = decoder_outputs[:, :, :self.onset_embed_dim]  # (batch_size, seq_len, d_model//3 + d_model%3)
-        rhyme_out = decoder_outputs[:, :, self.onset_embed_dim:self.onset_embed_dim+self.rhyme_tone_embed_dim] # (batch_size, seq_len, d_model//3)
-        tone_out = decoder_outputs[:, :, self.onset_embed_dim+self.rhyme_tone_embed_dim:] # (batch_size, seq_len, d_model//3)
-
-        onset_output = self.onset_lm_head(onset_out)  # (batch_size, seq_len, onset_vocab_size)
-        rhyme_output = self.rhyme_lm_head(rhyme_out)
-        tone_output = self.tone_lm_head(tone_out)
-
-        return onset_output, rhyme_output, tone_output
+        return onset_logits, rhyme_logits, tone_logits
 
     def decode(self, labels, encoder_outputs, encoder_attention_mask, label_attention_mask=None):
         square_subsequent_mask = self._create_square_subsequent_mask(labels.size(1), device=labels.device)
@@ -141,7 +165,7 @@ class PhonemeLaTr(nn.Module):
                             encoder_outputs,
                             tgt_mask = square_subsequent_mask,
                             memory_key_padding_mask = encoder_attention_mask,
-                            tgt_key_padding_mask = label_attention_mask)
+                            tgt_key_padding_mask = label_attention_mask),square_subsequent_mask
 
     def generate(self,
                  pixel_values,
@@ -188,34 +212,52 @@ class PhonemeLaTr(nn.Module):
                 inputs_embeds=inputs_embeds,
             ).last_hidden_state
 
+        # Khởi tạo với start_symbol (dạng [onset_start, rhyme_start, tone_start])
         ys = torch.tensor([[[start_symbol, 0, 0]]], dtype=torch.long).repeat(bz, 1, 1).to(DEVICE)
 
         for i in range(max_len):
             encoder_outputs = encoder_outputs.to(DEVICE)
 
-            out = self.decode(ys, encoder_outputs, attention_mask)
+            decoder_outputs,square_subsequent_mask = self.decode(ys, 
+                                      encoder_outputs, 
+                                      attention_mask)
 
-            onset_out = out[:, :, :self.onset_embed_dim]  # (batch_size, seq_len, d_model//3 + d_model%3)
-            rhyme_out = out[:, :, self.onset_embed_dim:self.onset_embed_dim+self.rhyme_tone_embed_dim] # (batch_size, seq_len, d_model//3)
-            tone_out = out[:, :, self.onset_embed_dim+self.rhyme_tone_embed_dim:] # (batch_size, seq_len, d_model//3)
+            onset_decoder_outputs = self.decoder_onset(decoder_outputs,
+                                encoder_outputs,
+                                tgt_mask = square_subsequent_mask,
+                                memory_key_padding_mask = attention_mask)
+            rhyme_decoder_outputs = self.decoder_rhyme(decoder_outputs, 
+                                encoder_outputs,
+                                tgt_mask = square_subsequent_mask,
+                                memory_key_padding_mask = attention_mask)
+            tone_decoder_outputs = self.decoder_tone(decoder_outputs, 
+                                encoder_outputs,
+                                tgt_mask = square_subsequent_mask,
+                                memory_key_padding_mask = attention_mask)
 
-            onset_output = self.onset_lm_head(onset_out)  # (batch_size, seq_len, onset_vocab_size)
-            rhyme_output = self.rhyme_lm_head(rhyme_out)
-            tone_output = self.tone_lm_head(tone_out)
+            # Dự đoán đồng thời onset, rhyme, tone
+            onset_logits = self.onset_lm_head(onset_decoder_outputs[:, -1, :])  # (batch_size, onset_vocab_size)
+            onset_pred = torch.argmax(onset_logits, dim=-1)  # (batch_size)
 
-            next_w_onset = torch.argmax(onset_output[:, -1], dim=-1)
-            next_w_rhyme = torch.argmax(rhyme_output[:, -1], dim=-1)
-            next_w_tone = torch.argmax(tone_output[:, -1], dim=-1)
+            rhyme_logits = self.rhyme_lm_head(rhyme_decoder_outputs[:, -1, :])  # (batch_size, rhyme_vocab_size)
+            rhyme_pred = torch.argmax(rhyme_logits, dim=-1)  # (batch_size)
 
-            next_word = torch.stack([next_w_onset, next_w_rhyme, next_w_tone], dim=-1)
+            tone_logits = self.tone_lm_head(tone_decoder_outputs[:, -1, :])  # (batch_size, tone_vocab_size)
+            tone_pred = torch.argmax(tone_logits, dim=-1)  # (batch_size)
 
-            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)
+            # Kết hợp các dự đoán
+            next_word = torch.stack([onset_pred, rhyme_pred, tone_pred], dim=-1)  # (batch_size, 3)
 
-            if torch.any(ys[:,:,0] == end_symbol, dim=1).sum() == bz:
+            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)  # (batch_size, seq_len + 1, 3)
+
+            # Kiểm tra điều kiện dừng
+            end_symbol_tensor = torch.tensor(end_symbol, dtype=torch.long, device=DEVICE)  # (3,)
+            is_end = torch.all(next_word == end_symbol_tensor.unsqueeze(0), dim=-1)  # (batch_size)
+            if torch.all(is_end):
                 break
 
         return ys
-        
+            
     def _calculate_embedding(self, pixel_values, coordinates, input_ids, ocr_attention_mask, src_attention_mask, tokenized_ocr):
         img_feat = self.visual_projector(self.vit(pixel_values).last_hidden_state)
         spatial_feat = self.spatial_feat_extractor(coordinates)
