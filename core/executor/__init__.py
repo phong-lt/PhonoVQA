@@ -7,5 +7,5 @@ from .CustomizedPreSTU_Executor import CustomizedPreSTU_Executor
 from .CustomizedSaL_Executor import CustomizedSaL_Executor
 
 from .PhonemeLaTr_Executor import PhonemeLaTr_Executor
-from .PhonemePreSTU_Executor import PhonemePreSTUDataset
+from .PhonemePreSTU_Executor import PhonemePreSTU_Executor
 from .PhonemeSaL_Executor import PhonemeSaL_Executor
