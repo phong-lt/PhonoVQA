@@ -2,15 +2,15 @@ EXECUTOR: "PhonemePreSTU_Executor"
 
 ## Tokenizer
 
-vocab_path: "PhonoVQA/phoneme_vocab.json"
+vocab_path: "./phoneme_vocab.json"
 annotation_paths:
-  - "/content/ViTextVQA_train.json"
+  - "./data/ViTextVQA_train.json"
 
 ## Training param
 DEVICE: "cuda"
 
 SAVE: TRUE
-SAVE_PATH: "PhonoVQA/models/"
+SAVE_PATH: "./modelprestu/"
 
 LR: 0.00005
 BETAS: 
@@ -32,17 +32,17 @@ max_eval_length: 20
 get_predict_score: TRUE
 
 ##DATA
-ocr_path: "/content/swintext_spotter"
+ocr_path: "./data/swintext_spotter"
 max_ocr_element: 50
 max_ocr_length: 100
 max_q_length: 30
 max_a_length: 128
 
-base_img_path: "/content/ViTextVQA_ViT_image"
+base_img_path: "./data/ViTextVQA_ViT_image"
 
-qa_train_path: "/content/ViTextVQA_fcsv/ViTextVQA_train.csv"
-qa_val_path: "/content/ViTextVQA_fcsv/ViTextVQA_dev.csv"
-qa_predict_path: "/content/ViTextVQA_fcsv/ViTextVQA_dev.csv"
+qa_train_path: "./data/ViTextVQA_ann_csv/train.csv"
+qa_val_path: "./data/ViTextVQA_ann_csv/dev.csv"
+qa_predict_path: "./data/ViTextVQA_ann_csv/test.csv"
 
 NUMWORKERS: 2
 

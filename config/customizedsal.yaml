@@ -40,12 +40,12 @@ max_obj_length: 50
 max_q_length: 30
 max_a_length: 128
 
-base_ocr_feature_path: ""
-base_obj_feature_path: ""
+base_ocr_feature_path: ".\data\swintext_spotter"
+base_obj_feature_path: "./data/vinvl_vinvl"
 
-qa_train_path: ""
-qa_val_path: ""
-qa_predict_path: ""
+qa_train_path: "./data/ViTextVQA_ann_csv/train.csv"
+qa_val_path: "./data/ViTextVQA_ann_csv/dev.csv"
+qa_predict_path: "./data/ViTextVQA_ann_csv/test.csv"
 
 context_token: "<c>"
 
