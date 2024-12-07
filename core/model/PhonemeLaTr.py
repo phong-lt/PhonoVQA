@@ -86,28 +86,15 @@ class PhonemeLaTr(nn.Module):
                             num_layers=self.config.num_decoder_layers,
                             n_head=self.config.n_head
                         )
-        
-        self.decoder_onset=BaseDecoder(
-                            emb_size=self.encoder.config.d_model,
-                            num_layers=1,
-                            n_head=self.config.n_head
-                        )
-        self.decoder_rhyme=BaseDecoder(
-                            emb_size=self.encoder.config.d_model,
-                            num_layers=1,
-                            n_head=self.config.n_head
-                        )
-        self.decoder_tone=BaseDecoder(
-                            emb_size=self.encoder.config.d_model,
-                            num_layers=1,
-                            n_head=self.config.n_head
-                        )
-        
+
+        # shared lm_head
+        self.shared_lm_head = nn.Linear(
+            self.encoder.config.d_model, self.encoder.config.d_model)
+
         # Adjusted lm_heads to predict from decoder output directly
         self.onset_lm_head = nn.Linear(self.encoder.config.d_model, onset_vocab_size)
         self.rhyme_lm_head = nn.Linear(self.encoder.config.d_model, rhyme_vocab_size)
         self.tone_lm_head = nn.Linear(self.encoder.config.d_model, tone_vocab_size)
-        
 
     def forward(self,
                 pixel_values,
@@ -127,31 +114,17 @@ class PhonemeLaTr(nn.Module):
                 inputs_embeds=inputs_embeds,
             ).last_hidden_state
 
-        decoder_outputs,square_subsequent_mask = self.decode(labels, 
+        decoder_outputs = self.decode(labels, 
                                       encoder_outputs, 
                                       attention_mask, 
                                       label_attention_mask)
 
-        onset_decoder_outputs = self.decoder_onset(decoder_outputs,
-                            encoder_outputs,
-                            tgt_mask = square_subsequent_mask,
-                            memory_key_padding_mask = attention_mask,
-                            tgt_key_padding_mask = label_attention_mask)
-        rhyme_decoder_outputs = self.decoder_rhyme(decoder_outputs, 
-                            encoder_outputs,
-                            tgt_mask = square_subsequent_mask,
-                            memory_key_padding_mask = attention_mask,
-                            tgt_key_padding_mask = label_attention_mask)
-        tone_decoder_outputs = self.decoder_tone(decoder_outputs, 
-                            encoder_outputs,
-                            tgt_mask = square_subsequent_mask,
-                            memory_key_padding_mask = attention_mask,
-                            tgt_key_padding_mask = label_attention_mask)
-        
+        decoder_outputs = self.shared_lm_head(decoder_outputs)  # (batch_size, seq_len, d_model)
+
         # Dự đoán đồng thời onset, rhyme, tone
-        onset_logits = self.onset_lm_head(onset_decoder_outputs)  # (batch_size, seq_len, onset_vocab_size)
-        rhyme_logits = self.rhyme_lm_head(rhyme_decoder_outputs)  # (batch_size, seq_len, rhyme_vocab_size)
-        tone_logits = self.tone_lm_head(tone_decoder_outputs)    # (batch_size, seq_len, tone_vocab_size)
+        onset_logits = self.onset_lm_head(decoder_outputs)  # (batch_size, seq_len, onset_vocab_size)
+        rhyme_logits = self.rhyme_lm_head(decoder_outputs)  # (batch_size, seq_len, rhyme_vocab_size)
+        tone_logits = self.tone_lm_head(decoder_outputs)    # (batch_size, seq_len, tone_vocab_size)
 
         return onset_logits, rhyme_logits, tone_logits
 
@@ -165,7 +138,7 @@ class PhonemeLaTr(nn.Module):
                             encoder_outputs,
                             tgt_mask = square_subsequent_mask,
                             memory_key_padding_mask = encoder_attention_mask,
-                            tgt_key_padding_mask = label_attention_mask),square_subsequent_mask
+                            tgt_key_padding_mask = label_attention_mask)
 
     def generate(self,
                  pixel_values,
@@ -217,32 +190,27 @@ class PhonemeLaTr(nn.Module):
 
         for i in range(max_len):
             encoder_outputs = encoder_outputs.to(DEVICE)
+            label_embedding = self.positional_encoding(
+                                    self.tgt_tok_emb(ys))
 
-            decoder_outputs,square_subsequent_mask = self.decode(ys, 
-                                      encoder_outputs, 
-                                      attention_mask)
+            decoder_outputs = self.decoder(label_embedding,
+                               encoder_outputs,
+                               tgt_mask=self._create_square_subsequent_mask(ys.size(1), device=DEVICE),
+                               memory_key_padding_mask=attention_mask)
 
-            onset_decoder_outputs = self.decoder_onset(decoder_outputs,
-                                encoder_outputs,
-                                tgt_mask = square_subsequent_mask,
-                                memory_key_padding_mask = attention_mask)
-            rhyme_decoder_outputs = self.decoder_rhyme(decoder_outputs, 
-                                encoder_outputs,
-                                tgt_mask = square_subsequent_mask,
-                                memory_key_padding_mask = attention_mask)
-            tone_decoder_outputs = self.decoder_tone(decoder_outputs, 
-                                encoder_outputs,
-                                tgt_mask = square_subsequent_mask,
-                                memory_key_padding_mask = attention_mask)
+            decoder_outputs = self.shared_lm_head(decoder_outputs)  # (batch_size, seq_len, d_model)
+
+            # Lấy output cuối cùng
+            last_decoder_output = decoder_outputs[:, -1, :]  # (batch_size, d_model)
 
             # Dự đoán đồng thời onset, rhyme, tone
-            onset_logits = self.onset_lm_head(onset_decoder_outputs[:, -1, :])  # (batch_size, onset_vocab_size)
+            onset_logits = self.onset_lm_head(last_decoder_output)  # (batch_size, onset_vocab_size)
             onset_pred = torch.argmax(onset_logits, dim=-1)  # (batch_size)
 
-            rhyme_logits = self.rhyme_lm_head(rhyme_decoder_outputs[:, -1, :])  # (batch_size, rhyme_vocab_size)
+            rhyme_logits = self.rhyme_lm_head(last_decoder_output)  # (batch_size, rhyme_vocab_size)
             rhyme_pred = torch.argmax(rhyme_logits, dim=-1)  # (batch_size)
 
-            tone_logits = self.tone_lm_head(tone_decoder_outputs[:, -1, :])  # (batch_size, tone_vocab_size)
+            tone_logits = self.tone_lm_head(last_decoder_output)  # (batch_size, tone_vocab_size)
             tone_pred = torch.argmax(tone_logits, dim=-1)  # (batch_size)
 
             # Kết hợp các dự đoán
@@ -276,3 +244,4 @@ class PhonemeLaTr(nn.Module):
         mask = (torch.triu(torch.ones((sz, sz), device=device)) == 1).transpose(0, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
+

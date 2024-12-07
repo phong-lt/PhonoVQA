@@ -53,10 +53,10 @@ class PhonemePreSTU(nn.Module):
         self.shared_lm_head = nn.Linear(
             self.encoder.config.d_model, self.encoder.config.d_model)
 
-        # phoneme lm_head
-        self.onset_lm_head = nn.Linear(self.onset_embed_dim, onset_vocab_size)
-        self.rhyme_lm_head = nn.Linear(self.rhyme_tone_embed_dim, rhyme_vocab_size)
-        self.tone_lm_head = nn.Linear(self.rhyme_tone_embed_dim, tone_vocab_size)
+        # Adjusted lm_heads to predict from decoder output directly
+        self.onset_lm_head = nn.Linear(self.encoder.config.d_model, onset_vocab_size)
+        self.rhyme_lm_head = nn.Linear(self.encoder.config.d_model, rhyme_vocab_size)
+        self.tone_lm_head = nn.Linear(self.encoder.config.d_model, tone_vocab_size)
 
 
     def forward(self,
@@ -66,7 +66,7 @@ class PhonemePreSTU(nn.Module):
                 src_attention_mask,
                 label_attention_mask):
 
-        inputs_embeds, attention_mask = self.calculate_embedding(
+        inputs_embeds, attention_mask = self._calculate_embedding(
                 pixel_values, input_ids, src_attention_mask)
 
         encoder_outputs = self.encoder(
@@ -83,15 +83,12 @@ class PhonemePreSTU(nn.Module):
         decoder_outputs = self.shared_lm_head(decoder_outputs)
 
 
-        onset_out = decoder_outputs[:, :, :self.onset_embed_dim]  # (batch_size, seq_len, d_model//3 + d_model%3)
-        rhyme_out = decoder_outputs[:, :, self.onset_embed_dim:self.onset_embed_dim+self.rhyme_tone_embed_dim] # (batch_size, seq_len, d_model//3)
-        tone_out = decoder_outputs[:, :, self.onset_embed_dim+self.rhyme_tone_embed_dim:] # (batch_size, seq_len, d_model//3)
+        # Dự đoán đồng thời onset, rhyme, tone
+        onset_logits = self.onset_lm_head(decoder_outputs)  # (batch_size, seq_len, onset_vocab_size)
+        rhyme_logits = self.rhyme_lm_head(decoder_outputs)  # (batch_size, seq_len, rhyme_vocab_size)
+        tone_logits = self.tone_lm_head(decoder_outputs)  
 
-        onset_output = self.onset_lm_head(onset_out)  # (batch_size, seq_len, onset_vocab_size)
-        rhyme_output = self.rhyme_lm_head(rhyme_out)
-        tone_output = self.tone_lm_head(tone_out)  
-
-        return onset_output, rhyme_output, tone_output
+        return onset_logits, rhyme_logits, tone_logits
     
     def decode(self, labels, encoder_outputs, encoder_attention_mask, label_attention_mask=None):
         square_subsequent_mask = self._create_square_subsequent_mask(labels.size(1), device=labels.device)
@@ -159,26 +156,38 @@ class PhonemePreSTU(nn.Module):
 
         for i in range(max_len):
             encoder_outputs = encoder_outputs.to(DEVICE)
+            label_embedding = self.positional_encoding(
+                                    self.tgt_tok_emb(ys))
 
-            out = self.decode(ys, encoder_outputs, attention_mask)
+            decoder_outputs = self.decoder(label_embedding,
+                               encoder_outputs,
+                               tgt_mask=self._create_square_subsequent_mask(ys.size(1), device=DEVICE),
+                               memory_key_padding_mask=attention_mask)
 
-            onset_out = out[:, :, :self.onset_embed_dim]  # (batch_size, seq_len, d_model//3 + d_model%3)
-            rhyme_out = out[:, :, self.onset_embed_dim:self.onset_embed_dim+self.rhyme_tone_embed_dim] # (batch_size, seq_len, d_model//3)
-            tone_out = out[:, :, self.onset_embed_dim+self.rhyme_tone_embed_dim:] # (batch_size, seq_len, d_model//3)   
-            
-            onset_output = self.onset_lm_head(onset_out)  # (batch_size, seq_len, onset_vocab_size)
-            rhyme_output = self.rhyme_lm_head(rhyme_out)
-            tone_output = self.tone_lm_head(tone_out)
+            decoder_outputs = self.shared_lm_head(decoder_outputs)  # (batch_size, seq_len, d_model)
 
-            next_w_onset = torch.argmax(onset_output[:, -1], dim=-1)
-            next_w_rhyme = torch.argmax(rhyme_output[:, -1], dim=-1)
-            next_w_tone = torch.argmax(tone_output[:, -1], dim=-1)
+            # Lấy output cuối cùng
+            last_decoder_output = decoder_outputs[:, -1, :]  # (batch_size, d_model)
 
-            next_word = torch.stack([next_w_onset, next_w_rhyme, next_w_tone], dim=-1)
+            # Dự đoán đồng thời onset, rhyme, tone
+            onset_logits = self.onset_lm_head(last_decoder_output)  # (batch_size, onset_vocab_size)
+            onset_pred = torch.argmax(onset_logits, dim=-1)  # (batch_size)
 
-            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)
+            rhyme_logits = self.rhyme_lm_head(last_decoder_output)  # (batch_size, rhyme_vocab_size)
+            rhyme_pred = torch.argmax(rhyme_logits, dim=-1)  # (batch_size)
 
-            if torch.any(ys[:,:,0] == end_symbol, dim=1).sum() == bz:
+            tone_logits = self.tone_lm_head(last_decoder_output)  # (batch_size, tone_vocab_size)
+            tone_pred = torch.argmax(tone_logits, dim=-1)  # (batch_size)
+
+            # Kết hợp các dự đoán
+            next_word = torch.stack([onset_pred, rhyme_pred, tone_pred], dim=-1)  # (batch_size, 3)
+
+            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)  # (batch_size, seq_len + 1, 3)
+
+            # Kiểm tra điều kiện dừng
+            end_symbol_tensor = torch.tensor(end_symbol, dtype=torch.long, device=DEVICE)  # (3,)
+            is_end = torch.all(next_word == end_symbol_tensor.unsqueeze(0), dim=-1)  # (batch_size)
+            if torch.all(is_end):
                 break
 
         return ys
