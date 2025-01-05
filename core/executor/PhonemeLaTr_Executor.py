@@ -187,15 +187,18 @@ class PhonemeLaTr_Executor(Base_Executor):
             rhyme_loss = self.loss_fn_rhyme(rhyme_logits.reshape(-1, rhyme_logits.shape[-1]), rhyme_tgt_out.reshape(-1))
             tone_loss = self.loss_fn_tone(tone_logits.reshape(-1, tone_logits.shape[-1]), tone_tgt_out.reshape(-1))
             
-            loss = onset_loss + rhyme_loss + tone_loss
+            onset_loss.backward()
+            rhyme_loss.backward()
+            tone_loss.backward()
 
-            loss.backward()
+
+
 
             self.optim.step()
 
             self.scheduler.step()
             
-            losses += loss.data.item()
+            losses += onset_loss.data.item() + rhyme_loss.data.item() + tone_loss.data.item()
 
             if it+1 == 1 or (it+1) % 20 == 0 or it+1==self.trainiter_length:
                 log.info(f"--TRAINING--|Epoch: {epoch}| Step: {it+1}/{self.trainiter_length} | Loss: {round(losses / (it + 1), 2)}")
@@ -233,9 +236,9 @@ class PhonemeLaTr_Executor(Base_Executor):
                 rhyme_loss = self.loss_fn_rhyme(rhyme_logits.reshape(-1, rhyme_logits.shape[-1]), rhyme_tgt_out.reshape(-1))
                 tone_loss = self.loss_fn_tone(tone_logits.reshape(-1, tone_logits.shape[-1]), tone_tgt_out.reshape(-1))
                 
-                loss = onset_loss + rhyme_loss + tone_loss
+            
 
-                losses += loss.data.item()
+                losses += onset_loss.data.item()+ rhyme_loss.data.item() + tone_loss.data.item()
 
                 if it+1 == 1 or (it+1) % 20 == 0 or it+1==self.valiter_length:
                     log.info(f"--VALIDATING--| Step: {it+1}/{self.valiter_length} | Loss: {round(losses / (it + 1), 2)}")
