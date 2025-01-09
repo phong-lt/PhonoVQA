@@ -67,8 +67,13 @@ class PhonemeLaTr(nn.Module):
                 param.requires_grad = False
 
         ###### CUSTOM COMPONENTS ######
-        self.rhyme_tone_embed_dim = self.encoder.config.d_model // 3
-        self.onset_embed_dim = int(self.encoder.config.d_model - self.rhyme_tone_embed_dim*2)
+        self.rhyme_tone_embed_dim = self.encoder.config.d_model // 4
+
+        self.onset_embed_dim = self.rhyme_tone_embed_dim
+        
+        self.gerenalized_embed_dim = int(self.encoder.config.d_model - self.rhyme_tone_embed_dim*3)
+
+        self.generalizer = nn.Linear(int(self.rhyme_tone_embed_dim*3), self.gerenalized_embed_dim)
 
         self.tgt_tok_emb = PhonemeEmbedding(
             onset_vocab_size,
@@ -87,14 +92,11 @@ class PhonemeLaTr(nn.Module):
                             n_head=self.config.n_head
                         )
 
-        # shared lm_head
-        self.shared_lm_head = nn.Linear(
-            self.encoder.config.d_model, self.encoder.config.d_model)
-
         # Adjusted lm_heads to predict from decoder output directly
         self.onset_lm_head = nn.Linear(self.encoder.config.d_model, onset_vocab_size)
         self.rhyme_lm_head = nn.Linear(self.encoder.config.d_model, rhyme_vocab_size)
         self.tone_lm_head = nn.Linear(self.encoder.config.d_model, tone_vocab_size)
+
 
     def forward(self,
                 pixel_values,
@@ -119,7 +121,7 @@ class PhonemeLaTr(nn.Module):
                                       attention_mask, 
                                       label_attention_mask)
 
-        decoder_outputs = self.shared_lm_head(decoder_outputs)  # (batch_size, seq_len, d_model)
+        
 
         # Dự đoán đồng thời onset, rhyme, tone
         onset_logits = self.onset_lm_head(decoder_outputs)  # (batch_size, seq_len, onset_vocab_size)
@@ -131,8 +133,10 @@ class PhonemeLaTr(nn.Module):
     def decode(self, labels, encoder_outputs, encoder_attention_mask, label_attention_mask=None):
         square_subsequent_mask = self._create_square_subsequent_mask(labels.size(1), device=labels.device)
         
-        label_embedding = self.positional_encoding(
-                                self.tgt_tok_emb(labels))
+        phono_embed = self.tgt_tok_emb(labels)
+        general_embed = self.generalizer(phono_embed)
+
+        label_embedding = self.positional_encoding(torch.cat((phono_embed, general_embed), dim=-1))
 
         return self.decoder(label_embedding,
                             encoder_outputs,
@@ -198,7 +202,7 @@ class PhonemeLaTr(nn.Module):
                                tgt_mask=self._create_square_subsequent_mask(ys.size(1), device=DEVICE),
                                memory_key_padding_mask=attention_mask)
 
-            decoder_outputs = self.shared_lm_head(decoder_outputs)  # (batch_size, seq_len, d_model)
+            
 
             # Lấy output cuối cùng
             last_decoder_output = decoder_outputs[:, -1, :]  # (batch_size, d_model)
